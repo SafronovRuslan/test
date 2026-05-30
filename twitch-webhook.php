@@ -27,9 +27,9 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
         exit;
     }
 
-    // Хитрість: закриваємо з'єднання з Twitch, щоб він не чекав 2 хвилини
+    // Хитрість: закриваємо з'єднання з Twitch, щоб він не чекав
     ignore_user_abort(true);
-    set_time_limit(180); // Даємо скрипту до 3 хвилин на виконання
+    set_time_limit(60); // Даємо скрипту до 1 хвилини на виконання
     
     header("Connection: close");
     header("Content-Length: 2");
@@ -40,8 +40,8 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     if (ob_get_level()) ob_end_flush();
     flush();
 
-    // ВІДТЯЖКА: засинаємо на 120 секунд (2 хвилини), поки стрім розігріється і згенерується прев'ю
-    sleep(120);
+    // ВІДТЯЖКА: засинаємо на 12 секунд
+    sleep(12);
 
     // 1. ОТРИМУЄМО ACCESS TOKEN ВІД TWITCH
     $ch = curl_init("https://id.twitch.tv/oauth2/token");
@@ -58,7 +58,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     $access_token = $token_res['access_token'] ?? null;
 
     if ($access_token) {
-        // 2. ЗАПИТУЄМО ДАНІ СТРІМУ ПРЯМО ЗАРАЗ
+        // 2. ЗАПИТУЄМО ДАНІ СТРІМУ
         $ch = curl_init("https://api.twitch.tv/helix/streams?user_login=" . $CHANNEL_LOGIN);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
@@ -77,7 +77,6 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
             // Забираємо картинку стріму і виставляємо нормальний розмір
             $thumb_url = $stream_data['thumbnail_url'] ?? '';
             $thumb_url = str_replace(['{width}', '{height}'], ['1280', '720'], $thumb_url);
-            // Додаємо таймштамп, щоб Telegram не кешував стару картинку з минулого стріму
             if ($thumb_url) $thumb_url .= "?t=" . time(); 
 
             // Формуємо повідомлення
@@ -86,7 +85,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
             $message .= "📝 <i>{$title}</i>\n\n";
             $message .= "🔥 <a href=\"https://www.twitch.tv/grizlibizli\">Залітай у чат →</a>";
 
-            // 3. ВІДПРАВЛЯЄМО В ТЕЛЕГРАМ ЯК ФОТО (якщо картинка є)
+            // 3. ВІДПРАВЛЯЄМО В ТЕЛЕГРАМ
             $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendMessage";
             $tg_data = [
                 'chat_id'    => $CHAT_ID,
@@ -94,7 +93,8 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
                 'text'       => $message
             ];
 
-            if (!empty($thumb_url)) {
+            // Перевіряємо, чи картинка є і чи вона не є тимчасовою заглушкою "в обробці"
+            if (!empty($thumb_url) && strpos($thumb_url, '404_processing') === false) {
                 $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendPhoto";
                 $tg_data = [
                     'chat_id' => $CHAT_ID,
@@ -113,7 +113,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
 
             file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Повідомлення надіслано.\n", FILE_APPEND);
         } else {
-            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Стрім не знайдено в API (можливо вже офлайн).\n", FILE_APPEND);
+            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Стрім не знайдено в API.\n", FILE_APPEND);
         }
     } else {
         file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Не вдалося отримати токен Twitch.\n", FILE_APPEND);
