@@ -1,10 +1,12 @@
 <?php
-
 $BOT_TOKEN = '8817577004:AAHdoK2fVl6p2Y_V0Pkb0n7CwP9urSXv8K';
 $CHAT_ID  = '-1003519701987';
 
 $payload = file_get_contents('php://input');
 $data = json_decode($payload, true);
+
+// ЛОГУВАННЯ: Записуємо все, що приходить від Twitch, у файл twitch_debug.log
+file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] PAYLOAD: " . $payload . "\n", FILE_APPEND);
 
 if (isset($data['challenge'])) {
     header('Content-Type: text/plain');
@@ -13,7 +15,6 @@ if (isset($data['challenge'])) {
 }
 
 if (isset($data['subscription']['type']) && $data['subscription']['type'] === 'stream.online') {
-    
     $event = $data['event'] ?? [];
     $title = $event['title'] ?? 'Без назви';
     $game  = $event['game_name'] ?? 'Не вказано';
@@ -30,8 +31,19 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
         'parse_mode' => 'HTML',
         'text' => $message
     ]));
-    curl_exec($ch);
+    
+    // ЛОГУВАННЯ: Результат відправки в Телеграм
+    $tg_res = curl_exec($ch);
+    file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] TG RESPONSE: " . $tg_res . "\n", FILE_APPEND);
+    
     curl_close($ch);
+}
+
+// Додатковий хук для швидкої перевірки логів через браузер
+if (isset($_GET['show_logs'])) {
+    header('Content-Type: text/plain');
+    echo file_exists('twitch_debug.log') ? file_get_contents('twitch_debug.log') : 'Лог-файл порожній';
+    exit;
 }
 
 http_response_code(200);
