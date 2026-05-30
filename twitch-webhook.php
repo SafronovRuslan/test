@@ -1,5 +1,5 @@
 <?php
-$BOT_TOKEN = '8817577004:AAHdoK2fVl6p2Y_V0Pkb0n7CwP9urSXv8K';
+$BOT_TOKEN = '8817577004:AAHdoK2fVl6p2Y_V0Pkb0n7CwP9urSXv8Ks';
 $CHAT_ID  = '-1003519701987';
 
 $payload = file_get_contents('php://input');
