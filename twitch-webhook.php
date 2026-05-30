@@ -10,14 +10,14 @@ $CHANNEL_LOGIN = 'grizlibizli'; // Твій логін на Twitch
 $payload = file_get_contents('php://input');
 $data = json_decode($payload, true);
 
-// Перевірка логів через браузер (залишаємо на випадок дебагу)
+// Перевірка логів через браузер
 if (isset($_GET['show_logs'])) {
     header('Content-Type: text/plain');
     echo file_exists('twitch_debug.log') ? file_get_contents('twitch_debug.log') : 'Лог-файл порожній';
     exit;
 }
 
-// 1. ВАЛІДАЦІЯ WEBHOOK (Обов'язково для Twitch)
+// 1. ВАЛІДАЦІЯ WEBHOOK (Миттєва відповідь)
 if (isset($data['challenge'])) {
     header('Content-Type: text/plain');
     echo $data['challenge'];
@@ -34,11 +34,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
         exit;
     }
 
-    // Виставляємо ліміт часу для PHP, щоб скрипт не вирубився раніше часу
-    set_time_limit(45);
-
-    // ВІДТЯЖКА: Чекаємо 12 секунд чесно, тримаючи з'єднання відкритим
-    sleep(12);
+    // НІЯКИХ sleep()! Працюємо максимально швидко, щоб вкластися в 10 секунд.
 
     // Отримуємо токен доступу Twitch
     $ch = curl_init("https://id.twitch.tv/oauth2/token");
@@ -67,62 +63,48 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
 
         $stream_data = $stream_res['data'][0] ?? null;
 
-        if ($stream_data) {
-            $title = $stream_data['title'] ?? 'Без назви';
-            $game  = $stream_data['game_name'] ?? 'Не вказано';
-            
-            // Форматуємо картинку
-            $thumb_url = $stream_data['thumbnail_url'] ?? '';
-            $thumb_url = str_replace(['{width}', '{height}'], ['1280', '720'], $thumb_url);
-            if ($thumb_url) $thumb_url .= "?t=" . time(); 
+        // Навіть якщо Twitch ще не повернув дані у масиві streams (бо пройшло мало часу),
+        // ми все одно згенеруємо красиве повідомлення, щоб не пропустити сповіщення.
+        $title = $stream_data['title'] ?? 'Почався стрім!';
+        $game  = $stream_data['game_name'] ?? 'Категорію оновлюється';
+        
+        // Генеруємо лінк на картинку. Навіть якщо її ще немає на серверах Twitch,
+        // ми змусимо Telegram завантажити її за шаблоном. Вона підтягнеться автоматично за пару секунд!
+        $thumb_url = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" . $CHANNEL_LOGIN . "-1280x720.jpg?t=" . time();
 
-            // Текст повідомлення
-            $message = "🟢 <b>ЙОКАЛИ МЕНЕ Я ПІДРУБИВСЯ!</b>\n\n";
-            $message .= "🎮 Стрімлю: <b>{$game}</b>\n";
-            $message .= "📝 <i>{$title}</i>\n\n";
-            $message .= "🔥 <a href=\"https://www.twitch.tv/grizlibizli\">Залітай у чат →</a>";
+        // Текст повідомлення
+        $message = "🟢 <b>ЙОКАЛИ МЕНЕ Я ПІДРУБИВСЯ!</b>\n\n";
+        $message .= "🎮 Стрімлю: <b>{$game}</b>\n";
+        $message .= "📝 <i>{$title}</i>\n\n";
+        $message .= "🔥 <a href=\"https://www.twitch.tv/grizlibizli\">Залітай у чат →</a>";
 
-            // Готуємо запит до Telegram
-            $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendMessage";
-            $tg_data = [
-                'chat_id'    => $CHAT_ID,
-                'parse_mode' => 'HTML',
-                'text'       => $message
-            ];
+        // Відправляємо картку з фото. Telegram сам спробує її скачати.
+        $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendPhoto";
+        $tg_data = [
+            'chat_id' => $CHAT_ID,
+            'photo'   => $thumb_url,
+            'caption' => $message,
+            'parse_mode' => 'HTML'
+        ];
 
-            if (!empty($thumb_url) && strpos($thumb_url, '404_processing') === false) {
-                $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendPhoto";
-                $tg_data = [
-                    'chat_id' => $CHAT_ID,
-                    'photo'   => $thumb_url,
-                    'caption' => $message,
-                    'parse_mode' => 'HTML'
-                ];
-            }
+        $ch = curl_init($tg_url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($tg_data));
+        $tg_res = curl_exec($ch);
+        curl_close($ch);
 
-            // Шлемо повідомлення в TG канал
-            $ch = curl_init($tg_url);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($tg_data));
-            $tg_res = curl_exec($ch);
-            curl_close($ch);
-
-            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Надіслано.\n", FILE_APPEND);
-        } else {
-            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Стрім не знайдено в API.\n", FILE_APPEND);
-        }
+        file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Надіслано без затримки.\n", FILE_APPEND);
     } else {
         file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Немає токена Twitch.\n", FILE_APPEND);
     }
 
-    // ВІДДАЄМО ВІДПОВІДЬ TWITCH ТІЛЬКИ ЗАРАЗ, КОЛИ ВСЕ ЗРОБЛЕНО
+    // МИТТЄВО КАЖЕМО ТВІЧУ ЩО ВСЕ ДОБРЕ
     http_response_code(200);
     echo "OK";
     exit;
 }
 
-// Для всіх інших лівих запитів
 http_response_code(200);
 echo "OK";
 ?>
