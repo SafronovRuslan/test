@@ -28,72 +28,38 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
 
     // Ігноруємо тестові події Twitch CLI
     if (isset($data['event']['is_test_event']) && $data['event']['is_test_event'] === true) {
-        http_response_code(200); echo "OK"; exit;
+        http_response_code(200); 
+        echo "OK (Test Event)"; 
+        exit;
     }
 
     // --- ДЕДУП ПО ВІКНУ ЧАСУ (cooldown) ---
-    // Ігноруємо повторні stream.online протягом 10 хвилин від останнього сповіщення.
-    $COOLDOWN = 600; // секунд (10 хв)
-    $fp = fopen('last_notify.txt', 'c+');   // c+ : створює якщо нема, не обнуляє
+    $COOLDOWN = 600; // 10 хвилин
+    $fp = fopen('last_notify.txt', 'c+');
     if ($fp) {
-        flock($fp, LOCK_EX);                // блокування проти гонки одночасних запитів
+        flock($fp, LOCK_EX); // Захист від гонки запитів
         $last = (int) trim(stream_get_contents($fp));
         $now  = time();
+        
         if ($now - $last < $COOLDOWN) {
-            // нещодавно вже надсилали — це дубль, виходимо
             flock($fp, LOCK_UN);
             fclose($fp);
-            http_response_code(200); echo "OK (cooldown)"; exit;
+            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] IGNORED: Спрацював кулдаун (прошло " . ($now - $last) . " сек).\n", FILE_APPEND);
+            http_response_code(200); 
+            echo "OK (cooldown)"; 
+            exit;
         }
-        // оновлюємо мітку часу ВІДРАЗУ (поки тримаємо блокування)
-        ftruncate($fp, 0); rewind($fp);
+        
+        // Оновлюємо мітку часу
+        ftruncate($fp, 0); 
+        rewind($fp);
         fwrite($fp, (string) $now);
         fflush($fp);
         flock($fp, LOCK_UN);
         fclose($fp);
     }
 
-    // !!! Відразу кажемо Twitch'у 200 OK !!!
-    http_response_code(200);
-    echo "OK";
-    if (function_exists('fastcgi_finish_request')) {
-        fastcgi_finish_request();
-    } else {
-        ignore_user_abort(true);
-        header('Connection: close');
-        header('Content-Length: ' . ob_get_length());
-        ob_end_flush(); @ob_flush(); flush();
-    }
-
-// ===== 3. ОБРОБКА stream.online =====
-if (isset($data['subscription']['type']) && $data['subscription']['type'] === 'stream.online') {
-
-    // Ігноруємо тестові події Twitch CLI
-    if (isset($data['event']['is_test_event']) && $data['event']['is_test_event'] === true) {
-        http_response_code(200);
-        echo "OK";
-        exit;
-    }
-
-    // !!! ГОЛОВНЕ ВИПРАВЛЕННЯ !!!
-    // Відразу кажемо Twitch'у "200 OK" і закриваємо з'єднання,
-    // а важку роботу робимо вже ПІСЛЯ цього. Так Twitch не буде ретраїти.
-    http_response_code(200);
-    echo "OK";
-    if (function_exists('fastcgi_finish_request')) {
-        fastcgi_finish_request();
-    } else {
-        // запасний варіант, якщо не php-fpm
-        ignore_user_abort(true);
-        header('Connection: close');
-        header('Content-Length: ' . ob_get_length());
-        ob_end_flush();
-        @ob_flush();
-        flush();
-    }
-
-    // --- далі вже не впливає на відповідь Twitch'у ---
-
+    // --- ОТРИМАННЯ ДАНИХ З TWITCH API ---
     // Токен Twitch
     $ch = curl_init("https://id.twitch.tv/oauth2/token");
     curl_setopt($ch, CURLOPT_POST, true);
@@ -109,6 +75,8 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
 
     if (!$access_token) {
         file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Немає токена Twitch.\n", FILE_APPEND);
+        http_response_code(200);
+        echo "OK (Token Error)";
         exit;
     }
 
@@ -123,6 +91,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     curl_close($ch);
     $stream_data = $stream_res['data'][0] ?? null;
 
+    // Формуємо тексти (якщо стріму немає в API в першу секунду, будуть дефолтні значення)
     $title = $stream_data['title'] ?? 'Почався стрім!';
     $game  = $stream_data['game_name'] ?? 'Категорія оновлюється';
     $thumb_url = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" . $CHANNEL_LOGIN . "-1280x720.jpg?t=" . time();
@@ -132,7 +101,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     $message .= "📝 <i>{$title}</i>\n\n";
     $message .= "🔥 <a href=\"https://www.twitch.tv/grizlibizli\">Залітай у чат →</a>";
 
-    // Надсилаємо в Telegram
+    // --- НАДСИЛАННЯ В TELEGRAM ---
     $tg_url = "https://api.telegram.org/bot{$BOT_TOKEN}/sendPhoto";
     $ch = curl_init($tg_url);
     curl_setopt($ch, CURLOPT_POST, true);
@@ -143,14 +112,18 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
         'caption'    => $message,
         'parse_mode' => 'HTML'
     ]));
-    curl_exec($ch);
+    $tg_res = curl_exec($ch);
     curl_close($ch);
 
-    file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: msg_id={$msgId}\n", FILE_APPEND);
+    file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Повідомлення надіслано в телеграм.\n", FILE_APPEND);
+
+    // Віддаємо фінальний статус Twitch
+    http_response_code(200);
+    echo "OK";
     exit;
 }
 
-// Будь-що інше
+// Будь-що інше (не сумісне з типом події)
 http_response_code(200);
 echo "OK";
 ?>
