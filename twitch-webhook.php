@@ -37,30 +37,32 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     $COOLDOWN = 600; // 10 хвилин
     $fp = fopen('last_notify.txt', 'c+');
     if ($fp) {
-        flock($fp, LOCK_EX); // Захист від гонки запитів
+        flock($fp, LOCK_EX);
         $last = (int) trim(stream_get_contents($fp));
         $now  = time();
         
         if ($now - $last < $COOLDOWN) {
             flock($fp, LOCK_UN);
             fclose($fp);
-            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] IGNORED: Спрацював кулдаун (прошло " . ($now - $last) . " сек).\n", FILE_APPEND);
+            file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] IGNORED: Кулдаун.\n", FILE_APPEND);
             http_response_code(200); 
             echo "OK (cooldown)"; 
             exit;
         }
         
-        // Оновлюємо мітку часу
-        ftruncate($fp, 0); 
-        rewind($fp);
+        ftruncate($fp, 0); rewind($fp);
         fwrite($fp, (string) $now);
         fflush($fp);
         flock($fp, LOCK_UN);
         fclose($fp);
     }
 
+    // --- МІКРО-ВІДТЯЖКА ДЛЯ TWITCH API ---
+    // Чекаємо 6 секунд, щоб сервери Twitch встигли оновити назву гри та стріму,
+    // але не перевищуємо жорсткий ліміт Twitch у 10 секунд.
+    sleep(6);
+
     // --- ОТРИМАННЯ ДАНИХ З TWITCH API ---
-    // Токен Twitch
     $ch = curl_init("https://id.twitch.tv/oauth2/token");
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -75,12 +77,10 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
 
     if (!$access_token) {
         file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] ERROR: Немає токена Twitch.\n", FILE_APPEND);
-        http_response_code(200);
-        echo "OK (Token Error)";
-        exit;
+        http_response_code(200); echo "OK"; exit;
     }
 
-    // Дані стріму
+    // Запитуємо дані поточного стріму
     $ch = curl_init("https://api.twitch.tv/helix/streams?user_login=" . $CHANNEL_LOGIN);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
@@ -91,7 +91,7 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     curl_close($ch);
     $stream_data = $stream_res['data'][0] ?? null;
 
-    // Формуємо тексти (якщо стріму немає в API в першу секунду, будуть дефолтні значення)
+    // Якщо навіть за 6 секунд база не оновилась, беремо дефолт
     $title = $stream_data['title'] ?? 'Почався стрім!';
     $game  = $stream_data['game_name'] ?? 'Категорія оновлюється';
     $thumb_url = "https://static-cdn.jtvnw.net/previews-ttv/live_user_" . $CHANNEL_LOGIN . "-1280x720.jpg?t=" . time();
@@ -115,15 +115,13 @@ if (isset($data['subscription']['type']) && $data['subscription']['type'] === 's
     $tg_res = curl_exec($ch);
     curl_close($ch);
 
-    file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Повідомлення надіслано в телеграм.\n", FILE_APPEND);
+    file_put_contents('twitch_debug.log', "[" . date('Y-m-d H:i:s') . "] SUCCESS: Надіслано з 6с затримкою.\n", FILE_APPEND);
 
-    // Віддаємо фінальний статус Twitch
     http_response_code(200);
     echo "OK";
     exit;
 }
 
-// Будь-що інше (не сумісне з типом події)
 http_response_code(200);
 echo "OK";
 ?>
