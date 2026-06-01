@@ -23,22 +23,47 @@ if (isset($data['challenge'])) {
     exit;
 }
 
-// ===== 2. ДЕДУПЛІКАЦІЯ (захист від повторів Twitch) =====
-$msgId = $_SERVER['HTTP_TWITCH_EVENTSUB_MESSAGE_ID'] ?? null;
-if ($msgId) {
-    $seen = @file_get_contents('seen_ids.log') ?: '';
-    if (strpos($seen, $msgId) !== false) {
-        // вже обробляли цей самий event — мовчки виходимо
-        http_response_code(200);
-        echo "OK (duplicate)";
-        exit;
+// ===== 2. ОБРОБКА stream.online =====
+if (isset($data['subscription']['type']) && $data['subscription']['type'] === 'stream.online') {
+
+    // Ігноруємо тестові події Twitch CLI
+    if (isset($data['event']['is_test_event']) && $data['event']['is_test_event'] === true) {
+        http_response_code(200); echo "OK"; exit;
     }
-    // запам'ятовуємо id (тримаємо тільки останні 50, щоб файл не ріс)
-    $ids = array_filter(explode("\n", $seen));
-    $ids[] = $msgId;
-    $ids = array_slice($ids, -50);
-    @file_put_contents('seen_ids.log', implode("\n", $ids) . "\n");
-}
+
+    // --- ДЕДУП ПО ВІКНУ ЧАСУ (cooldown) ---
+    // Ігноруємо повторні stream.online протягом 10 хвилин від останнього сповіщення.
+    $COOLDOWN = 600; // секунд (10 хв)
+    $fp = fopen('last_notify.txt', 'c+');   // c+ : створює якщо нема, не обнуляє
+    if ($fp) {
+        flock($fp, LOCK_EX);                // блокування проти гонки одночасних запитів
+        $last = (int) trim(stream_get_contents($fp));
+        $now  = time();
+        if ($now - $last < $COOLDOWN) {
+            // нещодавно вже надсилали — це дубль, виходимо
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            http_response_code(200); echo "OK (cooldown)"; exit;
+        }
+        // оновлюємо мітку часу ВІДРАЗУ (поки тримаємо блокування)
+        ftruncate($fp, 0); rewind($fp);
+        fwrite($fp, (string) $now);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+    }
+
+    // !!! Відразу кажемо Twitch'у 200 OK !!!
+    http_response_code(200);
+    echo "OK";
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        ignore_user_abort(true);
+        header('Connection: close');
+        header('Content-Length: ' . ob_get_length());
+        ob_end_flush(); @ob_flush(); flush();
+    }
 
 // ===== 3. ОБРОБКА stream.online =====
 if (isset($data['subscription']['type']) && $data['subscription']['type'] === 'stream.online') {
